@@ -1,0 +1,16 @@
+# mimOE Studio installation artifacts (not our code; download separately,
+# see README). Includes real account keys and a license file — must not be
+# committed.
+.edge/
+addon/
+mimoe
+mimoe-api-key.env
+mimikEdge.lic
+start.sh
+stop.sh
+status.sh
+
+# Python
+.venv/
+__pycache__/
+*.pyc
