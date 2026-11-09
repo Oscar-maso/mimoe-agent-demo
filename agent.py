@@ -28,6 +28,7 @@ MODEL = f"openai/{os.environ.get('MIMOE_MODEL', 'smollm2-360m')}"
 
 MAX_ITERATIONS = 10
 MAX_CONSECUTIVE_ERRORS = 2
+MAX_IDENTICAL_REPEATS = 3  # force-terminate after this many identical read/list calls
 WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
 
 # SmolLM2-360M is too small to reliably follow instructions from prose rules
@@ -177,6 +178,8 @@ def main() -> None:
     ]
     print(f"[0] list_files -> {{'files': {bootstrap_files}}}  (seeded, not model-chosen)")
     consecutive_errors = 0
+    repeat_counts = {("list_files", "{}"): 1}  # the seeded bootstrap call above
+    last_file_content = None  # most recent successful read_file content
 
     for i in range(MAX_ITERATIONS):
         prompt = AGENT_RULES + memory                    # 1. construct prompt
@@ -188,6 +191,33 @@ def main() -> None:
             sys.exit(1)
         action = parse_action(response)                   # 3. parse
         result = run_action(action)                        # 4. execute
+
+        if action.get("tool_name") == "read_file" and "content" in result:
+            last_file_content = result["content"]
+
+        # SmolLM2-360M sometimes re-issues a tool call it already made
+        # instead of recognizing it already has the answer (observed: it's
+        # sensitive to exact task phrasing, and can loop to the iteration
+        # cap on wording the few-shot example didn't anticipate). A single
+        # repeat gets a steering note in the result — the same "feedback
+        # the model can act on" pattern already used for errors. If that
+        # doesn't work either, the code stops trusting the model's judgment
+        # on this one decision: after MAX_IDENTICAL_REPEATS identical calls,
+        # it force-terminates using the most recent content retrieved,
+        # rather than waiting for a model this small to recognize it
+        # already has the answer.
+        action_key = (action.get("tool_name"), json.dumps(action.get("args", {}), sort_keys=True))
+        repeat_counts[action_key] = repeat_counts.get(action_key, 0) + 1
+        if action_key[0] in ("list_files", "read_file") and repeat_counts[action_key] >= MAX_IDENTICAL_REPEATS:
+            message = last_file_content or "Reached the repeat-call limit without enough information to answer."
+            print(f"[{i + 1}] terminate -> {{'message': {message!r}}}  (forced: repeated identical call {MAX_IDENTICAL_REPEATS}x, not model-chosen)")
+            break
+        if action_key[0] in ("list_files", "read_file") and repeat_counts[action_key] > 1:
+            result["note"] = (
+                "You already made this exact call earlier in this conversation; "
+                "its result is above. If you have enough information, call terminate next."
+            )
+
         print(f"[{i + 1}] {action.get('tool_name')} -> {result}")
 
         memory.extend([                                   # 5. update memory

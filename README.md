@@ -83,30 +83,49 @@ seeds it into memory as the agent's first "turn" before the model is asked
 to decide anything. Every decision after that point — which file to read,
 when to stop — is genuinely made by the model, not scripted.
 
-### What still doesn't work reliably
+### Phrasing sensitivity, and the circuit breaker that followed
 
-Asking it to *synthesize* an answer (e.g. "how many items are on the
-shopping list?") makes it loop between `list_files` and `read_file` without
-ever calling `terminate`, until the iteration cap stops it:
+`temperature=0` makes the agent deterministic *for a fixed wording* of the
+task, but it is not robust *across* wordings. Rephrasing the port-lookup
+question (`"what port does mimoE run on? Check workspace files to find
+out"` instead of the tested `"What port does mimOE run on? Check the
+workspace files to find out."`) was enough to make it read the right file,
+get the right content on turn 1 — then keep re-issuing `list_files` /
+`read_file` instead of recognizing it already had the answer, burning all
+`MAX_ITERATIONS` turns with no final answer. I found this by having someone
+else run the exact demo command with their own phrasing rather than mine.
 
-```
-$ echo "How many items are on the shopping list?" | python3 agent.py
-[0] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}  (seeded, not model-chosen)
-[1] read_file -> {'content': 'Shopping list\n...'}
-[2] list_files -> {'files': [...]}
-[3] read_file -> {'content': 'Shopping list\n...'}
-...
-Stopped: reached the iteration limit.
-```
+The fix is in two layers, both in `main()`, not in the prompt (a prose rule
+telling it not to repeat calls had no measurable effect):
 
-I'm keeping this in the repo rather than cherry-picking only the success
-case: it's a genuine finding about the limits of a 360M on-device model,
-and the guard rail (`MAX_ITERATIONS`) did exactly its job — it stopped the
-run cleanly instead of hanging or crashing. A direct, single-fact lookup
-(below) works reliably and deterministically; anything requiring the model
-to reason over or summarize retrieved content does not, at this model
-size. A larger local model (mimOE supports swapping models in Model View)
-would be the first thing to try next.
+1. **Soft nudge, 2nd identical call:** the code tracks `(tool_name, args)`
+   per call. A repeat gets an extra `"note"` field appended to its result —
+   the same "feedback the model can act on" pattern already used for
+   errors — suggesting it call `terminate` next.
+2. **Hard stop, 3rd identical call:** if the nudge doesn't work either, the
+   code stops trusting the model's judgment on this one decision and
+   force-terminates using the most recent file content it retrieved,
+   labeled `(forced: ..., not model-chosen)` in the output so it's never
+   mistaken for something the model decided.
+
+This fully fixed the port-lookup case for the problem phrasing above — it
+now reliably terminates with the right answer by turn 4 instead of hanging
+for 10. It does **not** fully fix the deeper problem: for a task that needs
+real synthesis ("how many items are on the shopping list?"), the circuit
+breaker still stops the loop, but the model's final message can be
+nonsense — in testing it echoed the nudge text itself back as its "answer"
+instead of counting the list. The guard rails guarantee the loop
+*terminates*; they don't guarantee the answer is *correct*. That second
+guarantee is out of reach for a 360M-parameter model without more work — a
+larger local model (mimOE supports swapping models in Model View) would be
+the first thing to try next.
+
+I'm keeping both the fix and its limits in the repo and in this README
+rather than only showing the clean run: the guard rails (iteration cap,
+consecutive-error stop, repeat circuit breaker) doing their job — stopping
+a run that can't make progress instead of hanging or crashing — is the
+actual engineering lesson here, independent of whether every task this
+tiny model is given gets a correct answer.
 
 ## Demo: a working run
 
@@ -171,3 +190,4 @@ mimOE instance differs:
 | `read_file` raises, `run_action` catches | Keeps the "did this fail" decision in one place rather than overloading the return value's shape |
 | `read_file` resolves and checks `os.path.commonpath` against `workspace/` | Caught during testing: `read_file("../agent.py")` originally escaped the workspace sandbox and read arbitrary files on disk |
 | `generate_response` failures (`openai.APIError`) caught in `main()` with a clear message and `sys.exit(1)` | Caught during testing: if mimOE isn't running, the uncaught exception was a raw LiteLLM/OpenAI stack trace instead of an actionable "is mimOE running?" message |
+| Repeated identical tool calls get a steering note (2nd time), then a forced, code-driven `terminate` (3rd time) | Caught during testing: a rephrased task made the model loop to `MAX_ITERATIONS` instead of recognizing it already had the answer; see "Phrasing sensitivity" above |
