@@ -1,15 +1,35 @@
-# mimOE agent demo
+# mimOE agent demo for mimik
 
 A small, tool-using AI agent that runs entirely against a local [mimOE
 Studio](https://developer.mimik.com/mimOE-studio-early-access-download-v2)
 inference endpoint — no cloud API, no network calls, inference happens
 on-device.
 
-Built as a take-home exercise. Uses the **"BYO Framework"** approach: a
-handful of pure Python functions and [LiteLLM](https://github.com/BerriAI/litellm)
-as a thin client, pointed at mimOE's OpenAI-compatible endpoint. No agent
-framework (LangChain/CrewAI/etc.) — the loop is simple enough that a
-framework would add indirection without adding value.
+## The assignment
+
+1. Download and install mimOE Studio from https://developer.mimik.com/mimOE-studio-early-access-download-v2
+2. Go to the Model View in the Studio, pick a local model (e.g., SmolLM2 which comes bundled), and load it.
+3. There's an API button in the model view — click it and explore the local inference endpoint it exposes. This is an OpenAI-compatible API running entirely on your device.
+4. Using the simplest path, the "BYO Framework" approach, build a small AI agent that points to this local mimOE inference endpoint, using whatever framework you're comfortable with (LangChain, LlamaIndex, CrewAI, or just raw API calls). It doesn't need to be complex — what matters is that it works and you can explain your choices.
+5. Push the code to a GitHub repo and share the link.
+
+The evaluation is on the ability to explore an unfamiliar AI technology, get it running, connect the pieces, and articulate what was built and why.
+
+**Platform note:** mimOE Studio's graphical Model View/API button is
+macOS- and Windows-only. On Linux, mimik's own download page says to use
+the CLI installer instead (`developer.mimik.com/docs/ai-foundation`),
+which is what's running here — same OpenAI-compatible endpoint, same
+model, just reached via terminal/`curl` rather than a GUI panel.
+
+Built as the take-home exercise above. Uses the **"BYO Framework"**
+approach: a handful of pure Python functions and
+[LiteLLM](https://github.com/BerriAI/litellm) as a thin client, pointed at
+mimOE's OpenAI-compatible endpoint. No agent framework (LangChain/CrewAI/
+etc.) — the loop is simple enough that a framework would add indirection
+without adding value. The agent loop structure (propose → parse → execute
+→ update memory → decide) is adapted from a template built during the
+Agentic AI Developer specialization (Coursera, Vanderbilt University, Dr.
+Jules White).
 
 ## What it does
 
@@ -44,9 +64,9 @@ alternation and make the model think it authored the data itself).
   choice since it's what I'd already used for Claude via its `anthropic/...`
   model prefix in coursework — swapping to a local server is a one-line
   change (`model="openai/smollm2-360m"`, `api_base=...`).
-- **No native OpenAI `tools=[...]` calling.** I tested it directly (see
-  below) — the bundled `smollm2-360m` model does not actually return
-  `tool_calls`; it just emits plausible-looking JSON as regular text with
+- **No native OpenAI `tools=[...]` calling.** I tested it directly — the
+  bundled `smollm2-360m` model does not actually return `tool_calls`; it
+  just emits plausible-looking JSON as regular text with
   `finish_reason: "stop"`. So the agent uses the course's prompt-based
   `\`\`\`action` block convention instead, which only requires the model to
   produce parseable text, not a provider-specific tool-calling feature.
@@ -83,7 +103,7 @@ seeds it into memory as the agent's first "turn" before the model is asked
 to decide anything. Every decision after that point — which file to read,
 when to stop — is genuinely made by the model, not scripted.
 
-### Phrasing sensitivity, and the circuit breaker that followed
+## Phrasing sensitivity, and the circuit breaker that followed
 
 `temperature=0` makes the agent deterministic *for a fixed wording* of the
 task, but it is not robust *across* wordings. Rephrasing the port-lookup
@@ -92,8 +112,9 @@ out"` instead of the tested `"What port does mimOE run on? Check the
 workspace files to find out."`) was enough to make it read the right file,
 get the right content on turn 1 — then keep re-issuing `list_files` /
 `read_file` instead of recognizing it already had the answer, burning all
-`MAX_ITERATIONS` turns with no final answer. I found this by having someone
-else run the exact demo command with their own phrasing rather than mine.
+`MAX_ITERATIONS` turns with no final answer. I found this the way these
+things actually get found: running the exact demo command with slightly
+different wording than the one it was tuned against.
 
 The fix is in two layers, both in `main()`, not in the prompt (a prose rule
 telling it not to repeat calls had no measurable effect):
@@ -129,12 +150,26 @@ tiny model is given gets a correct answer.
 
 ## Demo: a working run
 
+Verified on the installed mimOE instance (`v3.20.2`, developer edition,
+installed via the Linux CLI quick-start):
+
+```
+$ ./status.sh
+mimoe [pid = 165216, version = v3.20.2 (developer edition)] is running
+
+$ curl -X POST "http://localhost:8083/mimik-ai/openai/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer 1234" \
+  -d '{"model": "smollm2-360m", "messages": [{"role": "user", "content": "Complete this sentence: AI is like a"}]}'
+```
+
 `workspace/about_mimoe.txt` contains a fact the model cannot already know
 (the local port mimOE happened to start on) — the demo is designed so a
 right answer is proof the agent actually read the file, not a lucky guess
 from pretraining.
 
 ```
+$ source .venv/bin/activate
 $ python3 agent.py
 What should the agent do? What port does mimOE run on? Check the workspace files to find out.
 [0] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}  (seeded, not model-chosen)
@@ -146,14 +181,26 @@ What should the agent do? What port does mimOE run on? Check the workspace files
 
 Three turns: the model chose `about_mimoe.txt` over the decoy
 `shopping_list.txt` on its own, read it, and terminated with the correct,
-grounded answer.
+grounded answer. A slightly reworded version of the same question (see
+"Phrasing sensitivity" above) still gets the right answer, just via the
+circuit breaker at turn 4 instead of the model terminating on its own:
+
+```
+What should the agent do? what port does mimoE run on? Check workspace files to find out
+[0] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}  (seeded, not model-chosen)
+[1] read_file -> {'content': 'mimOE local port: 8083\n'}
+[2] list_files -> {..., 'note': 'You already made this exact call earlier...'}
+[3] read_file -> {..., 'note': 'You already made this exact call earlier...'}
+[4] terminate -> {'message': 'mimOE local port: 8083\n'}  (forced: repeated identical call 3x, not model-chosen)
+```
 
 ## Running it
 
 ```bash
 # 1. Start mimOE Studio, load smollm2-360m in Model View, click the API
 #    button to confirm the base URL/model name (defaults below assume the
-#    defaults mimOE itself prints).
+#    defaults mimOE itself prints). On Linux, use the CLI quick-start
+#    instead (developer.mimik.com/docs/ai-foundation) — same endpoint.
 
 # 2. From this directory:
 python3 -m venv .venv
