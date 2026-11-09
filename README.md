@@ -1,11 +1,23 @@
-# mimOE agent demo
+# mimOE agent demo for MIMIK 
 
 A small, tool-using AI agent that runs entirely against a local [mimOE
 Studio](https://developer.mimik.com/mimOE-studio-early-access-download-v2)
 inference endpoint — no cloud API, no network calls, inference happens
 on-device.
+Instructions: 
+1. Download and install mimOE Studio from https://developer.mimik.com/mimOE-studio-early-access-download-v2
 
-Built as a take-home exercise. Uses the **"BYO Framework"** approach: a
+2. Go to the Model View in the Studio, pick a local model (e.g., SmolLM2 which comes bundled), and load it.
+
+3. You'll notice there's an API button in the model view. Click it and explore the local inference endpoint it exposes. This is an OpenAI-compatible API running entirely on your device.
+
+4. Using the simplest path, the "BYO Framework" approach, build a small AI agent that points to this local mimOE inference endpoint. You can use whatever framework you're comfortable with (LangChain, LlamaIndex, CrewAI, or even just raw API calls). The agent doesn't need to be complex. What matters is that it works and you can explain your choices.
+
+5. Push your code to a GitHub repo and share the link with us.
+
+The key thing we're evaluating is your ability to explore an unfamiliar AI technology, get it running, connect the pieces, and articulate what you built and why. We fully expect you to use AI coding assistants (Claude, Copilot, etc.) to help. That's part of the skillset we value.
+
+The task is to build a take-home exercise that uses the **"BYO Framework"** approach: a
 handful of pure Python functions and [LiteLLM](https://github.com/BerriAI/litellm)
 as a thin client, pointed at mimOE's OpenAI-compatible endpoint. No agent
 framework (LangChain/CrewAI/etc.) — the loop is simple enough that a
@@ -37,137 +49,79 @@ a new `user` message (it's new information from outside the model, not
 something the model said — tagging it `assistant` would break turn
 alternation and make the model think it authored the data itself).
 
-## Why mimOE + LiteLLM + this loop shape
+This is coming from a template that I acquired from an Agentic AI course with Vanderbilt University. 
+This is the terminal information of the system tested and runned inside my laptop: 
 
-- **mimOE's endpoint is OpenAI-compatible**, so any OpenAI-style client
-  works unmodified except for `api_base`/`api_key`. LiteLLM was the natural
-  choice since it's what I'd already used for Claude via its `anthropic/...`
-  model prefix in coursework — swapping to a local server is a one-line
-  change (`model="openai/smollm2-360m"`, `api_base=...`).
-- **No native OpenAI `tools=[...]` calling.** I tested it directly (see
-  below) — the bundled `smollm2-360m` model does not actually return
-  `tool_calls`; it just emits plausible-looking JSON as regular text with
-  `finish_reason: "stop"`. So the agent uses the course's prompt-based
-  `\`\`\`action` block convention instead, which only requires the model to
-  produce parseable text, not a provider-specific tool-calling feature.
-- **The propose/execute split** (model proposes, code executes) is a
-  safety and testability boundary, not a convenience: the code can validate
-  arguments, catch missing files, and reject nonsense before anything runs,
-  regardless of what the model outputs.
+============================================
+  mimOE AI Foundation is ready!
+============================================
 
-## A real limitation I hit, and how I worked around it
+Test your setup with this command:
 
-`smollm2-360m` is a 360-million-parameter model running on a 2048-token
-context. It is **not** reliable at following instructions from prose rules
-alone — confirmed by testing: with only a system prompt describing the
-format, it ignored it entirely and rambled about unrelated things until it
-hit `finish_reason: "length"`.
+curl -X POST "http://localhost:8083/mimik-ai/openai/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer 1234" \
+  -d '{
+    "model": "smollm2-360m",
+    "messages": [{"role": "user", "content": "Complete this sentence: AI is like a"}]
+  }'
 
-Two adjustments fixed most of this:
+To stop mimOE (universal):    pkill -f mimoe
 
-1. **One fixed few-shot example** (a full `list_files → read_file →
-   terminate` cycle) prepended to every prompt. Small models imitate a
-   worked example far more reliably than they follow abstract instructions
-   — this got JSON-format compliance to effectively 100% in testing.
-2. **`temperature=0`.** At default sampling it would occasionally pick a
-   plausible-sounding but wrong tool name or invent argument keys that
-   don't exist. Determinism matters more than creativity for a planner this
-   small.
+ cd to the mimOE installed directory 
+  cd /home/oscar/mimo_interview
 
-One thing the few-shot example and `temperature=0` did *not* fix: on a
-fresh task, the model would often skip straight to `terminate` with a
-confidently wrong, hallucinated answer instead of calling `list_files`
-first. Rather than trust a 360M-parameter model's judgment for a
-deterministic bootstrap step, `main()` calls `list_files()` itself and
-seeds it into memory as the agent's first "turn" before the model is asked
-to decide anything. Every decision after that point — which file to read,
-when to stop — is genuinely made by the model, not scripted.
+To stop mimOE (local):        ./stop.sh
+To restart (background):      ./stop.sh >/dev/null; ./start.sh >/dev/null 2>&1 & sleep 2; ./status.sh
+To restart (interactive):      ./stop.sh ; ./start.sh
+To get mimoe status:          ./status.sh
+To view logs (follow):        tail -f ./.edge/logs/mimoe.log
 
-### What still doesn't work reliably
+Documentation: https://developer.mimik.com/docs/ai-foundation
 
-Asking it to *synthesize* an answer (e.g. "how many items are on the
-shopping list?") makes it loop between `list_files` and `read_file` without
-ever calling `terminate`, until the iteration cap stops it:
-
-```
-$ echo "How many items are on the shopping list?" | python3 agent.py
-[0] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}  (seeded, not model-chosen)
-[1] read_file -> {'content': 'Shopping list\n...'}
-[2] list_files -> {'files': [...]}
-[3] read_file -> {'content': 'Shopping list\n...'}
-...
-Stopped: reached the iteration limit.
-```
-
-I'm keeping this in the repo rather than cherry-picking only the success
-case: it's a genuine finding about the limits of a 360M on-device model,
-and the guard rail (`MAX_ITERATIONS`) did exactly its job — it stopped the
-run cleanly instead of hanging or crashing. A direct, single-fact lookup
-(below) works reliably and deterministically; anything requiring the model
-to reason over or summarize retrieved content does not, at this model
-size. A larger local model (mimOE supports swapping models in Model View)
-would be the first thing to try next.
-
-## Demo: a working run
-
-`workspace/about_mimoe.txt` contains a fact the model cannot already know
-(the local port mimOE happened to start on) — the demo is designed so a
-right answer is proof the agent actually read the file, not a lucky guess
-from pretraining.
-
-```
-$ python3 agent.py
-What should the agent do? What port does mimOE run on? Check the workspace files to find out.
+oscar@oscar-Yoga-7-15ITL5:~/mimo_interview$ source .venv/bin/activate
+(.venv) oscar@oscar-Yoga-7-15ITL5:~/mimo_interview$ python3 agent.py
+What should the agent do? what port does mimoE run on? Check workspace files to find out 
 [0] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}  (seeded, not model-chosen)
 [finish_reason: stop]
 [1] read_file -> {'content': 'mimOE local port: 8083\n'}
 [finish_reason: stop]
-[2] terminate -> {'message': 'mimOE local port: 8083.\n'}
-```
+[2] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}
+[finish_reason: stop]
+[3] read_file -> {'content': 'mimOE local port: 8083\n'}
+[finish_reason: stop]
+[4] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}
+[finish_reason: stop]
+[5] read_file -> {'content': 'mimOE local port: 8083\n'}
+[finish_reason: stop]
+[6] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}
+[finish_reason: stop]
+[7] read_file -> {'content': 'mimOE local port: 8083\n'}
+[finish_reason: stop]
+[8] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}
+[finish_reason: stop]
+[9] read_file -> {'content': 'mimOE local port: 8083\n'}
+[finish_reason: stop]
+[10] list_files -> {'files': ['about_mimoe.txt', 'shopping_list.txt']}
+Stopped: reached the iteration limit.
+(.venv) oscar@oscar-Yoga-7-15ITL5:~/mimo_interview$ python3 -m unittest tests.test_agent -v
+test_extracts_fenced_block (tests.test_agent.TestExtractMarkdownBlock.test_extracts_fenced_block) ... ok
+test_returns_none_when_fence_missing (tests.test_agent.TestExtractMarkdownBlock.test_returns_none_when_fence_missing) ... ok
+test_invalid_json_becomes_error_action (tests.test_agent.TestParseAction.test_invalid_json_becomes_error_action) ... ok
+test_missing_fence_becomes_error_action (tests.test_agent.TestParseAction.test_missing_fence_becomes_error_action) ... ok
+test_missing_required_key_becomes_error_action (tests.test_agent.TestParseAction.test_missing_required_key_becomes_error_action) ... ok
+test_valid_action (tests.test_agent.TestParseAction.test_valid_action) ... ok
+test_blocks_path_traversal_outside_workspace (tests.test_agent.TestReadFileDirect.test_blocks_path_traversal_outside_workspace) ... ok
+test_raises_file_not_found_for_missing_file (tests.test_agent.TestReadFileDirect.test_raises_file_not_found_for_missing_file) ... ok
+test_list_files_returns_workspace_contents (tests.test_agent.TestRunAction.test_list_files_returns_workspace_contents) ... ok
+test_read_file_missing_arg_returns_error (tests.test_agent.TestRunAction.test_read_file_missing_arg_returns_error) ... ok
+test_read_file_missing_file_returns_error (tests.test_agent.TestRunAction.test_read_file_missing_file_returns_error) ... ok
+test_read_file_returns_content (tests.test_agent.TestRunAction.test_read_file_returns_content) ... ok
+test_terminate_returns_message (tests.test_agent.TestRunAction.test_terminate_returns_message) ... ok
+test_unknown_tool_returns_error (tests.test_agent.TestRunAction.test_unknown_tool_returns_error) ... ok
 
-Three turns: the model chose `about_mimoe.txt` over the decoy
-`shopping_list.txt` on its own, read it, and terminated with the correct,
-grounded answer.
+----------------------------------------------------------------------
+Ran 14 tests in 0.001s
 
-## Running it
-
-```bash
-# 1. Start mimOE Studio, load smollm2-360m in Model View, click the API
-#    button to confirm the base URL/model name (defaults below assume the
-#    defaults mimOE itself prints).
-
-# 2. From this directory:
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# 3. Run the agent:
-python3 agent.py
-# What should the agent do? What port does mimOE run on? Check the workspace files to find out.
-
-# 4. Run the tests (no mimOE/model required — pure plumbing only):
-python3 -m unittest tests.test_agent -v
-```
-
-Connection settings are overridable via environment variables if your
-mimOE instance differs:
-
-| Variable         | Default                                       |
-|------------------|------------------------------------------------|
-| `MIMOE_API_BASE` | `http://localhost:8083/mimik-ai/openai/v1`     |
-| `MIMOE_API_KEY`  | `1234` (mimOE's own local placeholder token — not a real credential) |
-| `MIMOE_MODEL`    | `smollm2-360m`                                 |
-
-## Design decisions, summarized
-
-| Decision | Why |
-|---|---|
-| LiteLLM over raw `openai` SDK | I'd already used it for Claude; same call shape, one-line swap of `model`/`api_base` to point at mimOE instead |
-| Prompt-based `\`\`\`action` blocks, not `tools=[...]` | Verified mimOE's bundled model doesn't actually return `tool_calls` |
-| One fixed few-shot example in the system context | Prose rules alone were ignored; a worked example wasn't |
-| `temperature=0` | Reliability over creativity for a planner this small |
-| Scripted first `list_files()` call | The model reliably chooses well *given* file names, but not reliably reaches for a tool at all on a fresh task |
-| Errors returned as `{"error": ...}` results, not exceptions that crash the loop | The model can read an error and react to it next turn; two in a row stops the run instead of looping forever |
-| `read_file` raises, `run_action` catches | Keeps the "did this fail" decision in one place rather than overloading the return value's shape |
-| `read_file` resolves and checks `os.path.commonpath` against `workspace/` | Caught during testing: `read_file("../agent.py")` originally escaped the workspace sandbox and read arbitrary files on disk |
-| `generate_response` failures (`openai.APIError`) caught in `main()` with a clear message and `sys.exit(1)` | Caught during testing: if mimOE isn't running, the uncaught exception was a raw LiteLLM/OpenAI stack trace instead of an actionable "is mimOE running?" message |
+OK
+(.venv) oscar@oscar-Yoga-7-15ITL5:~/mimo_interview$ deactivate
