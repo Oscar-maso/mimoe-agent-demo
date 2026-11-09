@@ -169,3 +169,5 @@ mimOE instance differs:
 | Scripted first `list_files()` call | The model reliably chooses well *given* file names, but not reliably reaches for a tool at all on a fresh task |
 | Errors returned as `{"error": ...}` results, not exceptions that crash the loop | The model can read an error and react to it next turn; two in a row stops the run instead of looping forever |
 | `read_file` raises, `run_action` catches | Keeps the "did this fail" decision in one place rather than overloading the return value's shape |
+| `read_file` resolves and checks `os.path.commonpath` against `workspace/` | Caught during testing: `read_file("../agent.py")` originally escaped the workspace sandbox and read arbitrary files on disk |
+| `generate_response` failures (`openai.APIError`) caught in `main()` with a clear message and `sys.exit(1)` | Caught during testing: if mimOE isn't running, the uncaught exception was a raw LiteLLM/OpenAI stack trace instead of an actionable "is mimOE running?" message |

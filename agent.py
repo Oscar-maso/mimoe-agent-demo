@@ -13,9 +13,11 @@ Agent loop (see README.md for the full explanation):
 
 import json
 import os
+import sys
 from typing import Dict, List, Optional
 
 from litellm import completion
+from openai import APIError
 
 # --- mimOE connection settings -------------------------------------------
 # mimOE Studio exposes an OpenAI-compatible endpoint on-device. The model
@@ -118,10 +120,17 @@ def list_files() -> List[str]:
 
 
 def read_file(file_name: str) -> str:
-    path = os.path.join(WORKSPACE_DIR, file_name)
+    workspace_root = os.path.realpath(WORKSPACE_DIR)
+    path = os.path.realpath(os.path.join(workspace_root, file_name))
+    not_found = FileNotFoundError(
+        f"'{file_name}' does not exist. Available files: {', '.join(list_files()) or '(none)'}"
+    )
+    # Reject paths that escape the workspace (e.g. "../agent.py") rather than
+    # letting a path-traversal argument read anything on disk.
+    if os.path.commonpath([workspace_root, path]) != workspace_root:
+        raise not_found
     if not os.path.isfile(path):
-        available = ", ".join(list_files()) or "(none)"
-        raise FileNotFoundError(f"'{file_name}' does not exist. Available files: {available}")
+        raise not_found
     with open(path) as f:
         return f.read()
 
@@ -171,7 +180,12 @@ def main() -> None:
 
     for i in range(MAX_ITERATIONS):
         prompt = AGENT_RULES + memory                    # 1. construct prompt
-        response = generate_response(prompt)              # 2. generate
+        try:
+            response = generate_response(prompt)          # 2. generate
+        except APIError as e:
+            print(f"Could not reach mimOE at {API_BASE} ({e}).")
+            print("Is mimOE running? Check with ./status.sh, start it with ./start.sh.")
+            sys.exit(1)
         action = parse_action(response)                   # 3. parse
         result = run_action(action)                        # 4. execute
         print(f"[{i + 1}] {action.get('tool_name')} -> {result}")

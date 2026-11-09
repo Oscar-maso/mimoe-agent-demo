@@ -73,6 +73,10 @@ class TestReadFileDirect(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             read_file("nope.txt")
 
+    def test_blocks_path_traversal_outside_workspace(self):
+        with self.assertRaises(FileNotFoundError):
+            read_file("../agent.py")
+
 
 if __name__ == "__main__":
     unittest.main()
